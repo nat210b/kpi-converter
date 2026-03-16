@@ -3,6 +3,7 @@ export interface KpiRow {
   position: string
   measureCode: string
   kpiName: string
+  section: string
   weight: number
   unit: string
   perspective: string
@@ -19,6 +20,11 @@ export interface ConvertResult {
   empCount: number
   kpiCount: number
   rowCount: number
+}
+
+export interface KpiSectionInfo {
+  name: string
+  kpiCount: number
 }
 
 export type StatusType = 'idle' | 'loading' | 'success' | 'error'

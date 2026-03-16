@@ -1,13 +1,23 @@
 import * as XLSX from 'xlsx'
-import type { KpiRow, ConvertResult } from '../types'
+import type { ConvertResult, KpiRow, KpiSectionInfo } from '../types'
 
 const EXCLUDED_SECTIONS = ['Turnover', 'Time', 'Total']
+const FALLBACK_SECTION = 'Other'
 
 function cellVal(sheet: XLSX.WorkSheet, r: number, c: number): string {
   const addr = XLSX.utils.encode_cell({ r, c })
   const cell = sheet[addr]
   if (!cell || cell.v === undefined || cell.v === null) return ''
   return String(cell.v).trim()
+}
+
+function normalizeSectionName(raw: string): string {
+  const t = (raw || '').trim()
+  return t ? t : FALLBACK_SECTION
+}
+
+function isExcludedSection(sectionName: string): boolean {
+  return EXCLUDED_SECTIONS.some((x) => sectionName.includes(x))
 }
 
 /**
@@ -17,14 +27,13 @@ function cellVal(sheet: XLSX.WorkSheet, r: number, c: number): string {
 function formatLevel(raw: string): string {
   if (!raw) return ''
   const trimmed = raw.trim()
-  // Already has a % sign or non-numeric symbols — leave it alone
-  if (/[%<>=a-zA-Zก-๙]/.test(trimmed)) return trimmed
+  // Already has a % sign or non-numeric symbols â€” leave it alone
+  if (/[%<>=a-zA-Zà¸-à¹™]/.test(trimmed)) return trimmed
   // Try to parse as a pure number
   const num = Number(trimmed)
   if (!isNaN(num) && trimmed !== '') {
     // Multiply by 100, remove trailing .00 noise
-    const pct = Math.round(num * 10000) / 100  // e.g. 0.9 → 90, 1.2 → 120
-    // Format: no unnecessary decimals
+    const pct = Math.round(num * 10000) / 100 // e.g. 0.9 â†’ 90, 1.2 â†’ 120
     const formatted = pct % 1 === 0 ? `${pct}%` : `${pct}%`
     return formatted
   }
@@ -33,19 +42,52 @@ function formatLevel(raw: string): string {
 
 function mapFreq(f: string): string {
   if (!f) return 'Semi-Annually'
-  if (f.includes('ทุกเดือน') || f.includes('Monthly')) return 'Monthly'
-  if (f.includes('ปลายปี') && !f.includes('ครึ่ง')) return 'Annually'
+  if (f.includes('à¸—à¸¸à¸à¹€à¸”à¸·à¸­à¸™') || f.includes('Monthly')) return 'Monthly'
+  if (f.includes('à¸›à¸¥à¸²à¸¢à¸›à¸µ') && !f.includes('à¸„à¸£à¸¶à¹ˆà¸‡')) return 'Annually'
   return 'Semi-Annually'
 }
 
-export function parseKpiWorkbook(workbook: XLSX.WorkBook): ConvertResult {
-  // Find the KPI sheet — accept any sheet name containing "KPI"
+function findKpiSheet(workbook: XLSX.WorkBook): XLSX.WorkSheet {
+  // Accept any sheet name containing "KPI"
   const sheetName = workbook.SheetNames.find((s) => s.includes('KPI'))
   if (!sheetName) {
-    throw new Error('ไม่พบ sheet ที่มีชื่อ "KPI" ในไฟล์นี้')
+    throw new Error('à¹„à¸¡à¹ˆà¸žà¸š sheet à¸—à¸µà¹ˆà¸¡à¸µà¸Šà¸·à¹ˆà¸­ "KPI" à¹ƒà¸™à¹„à¸Ÿà¸¥à¹Œà¸™à¸µà¹‰')
+  }
+  return workbook.Sheets[sheetName]
+}
+
+export function scanKpiSections(workbook: XLSX.WorkBook): KpiSectionInfo[] {
+  const sheet = findKpiSheet(workbook)
+  const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1')
+  const maxRow = range.e.r
+
+  let currentSection = ''
+  const counts = new Map<string, number>()
+
+  for (let r = 12; r <= Math.min(maxRow, 60); r++) {
+    const sec = cellVal(sheet, r, 0)
+    if (sec) currentSection = sec
+
+    const sectionName = normalizeSectionName(currentSection)
+    if (isExcludedSection(sectionName)) continue
+
+    const kpiName = cellVal(sheet, r, 4)
+    if (!kpiName || kpiName === 'nan') continue
+
+    counts.set(sectionName, (counts.get(sectionName) ?? 0) + 1)
   }
 
-  const sheet = workbook.Sheets[sheetName]
+  return Array.from(counts.entries())
+    .map(([name, kpiCount]) => ({ name, kpiCount }))
+    .sort((a, b) => b.kpiCount - a.kpiCount || a.name.localeCompare(b.name))
+}
+
+export function parseKpiWorkbook(
+  workbook: XLSX.WorkBook,
+  options?: { includeSections?: Set<string> }
+): ConvertResult {
+  const sheet = findKpiSheet(workbook)
+
   const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1')
   const maxRow = range.e.r
   const maxCol = range.e.c
@@ -70,30 +112,31 @@ export function parseKpiWorkbook(workbook: XLSX.WorkBook): ConvertResult {
     const sec = cellVal(sheet, r, 0)
     if (sec) currentSection = sec
 
-    // Skip excluded sections
-    if (EXCLUDED_SECTIONS.some((x) => currentSection.includes(x))) continue
+    const sectionName = normalizeSectionName(currentSection)
+
+    if (isExcludedSection(sectionName)) continue
+    if (options?.includeSections && !options.includeSections.has(sectionName)) continue
 
     const kpiName = cellVal(sheet, r, 4)
     if (!kpiName || kpiName === 'nan') continue
 
     const measureCode = cellVal(sheet, r, 5)
-    const unit = cellVal(sheet, r, 7) || 'ร้อยละ'
+    const unit = cellVal(sheet, r, 7) || 'à¸£à¹‰à¸­à¸¢à¸¥à¸°'
     const freq = mapFreq(cellVal(sheet, r, 10))
 
-    const perspective = currentSection.includes('Department')
+    const perspective = sectionName.includes('Department')
       ? 'Department KPIs'
       : 'Individual KPIs'
 
     // M=col12=Level5, N=col13=Level4, O=col14=Level3, P=col15=Level2, Q=col16=Level1
-    // Use raw cell value so numeric cells keep their number type for formatLevel conversion
     const getRawLevel = (col: number): string => {
       const addr = XLSX.utils.encode_cell({ r, c: col })
       const cell = sheet[addr]
       if (!cell || cell.v === undefined || cell.v === null) return ''
-      // If cell type is number, use the raw numeric value for accurate % conversion
       if (cell.t === 'n') return formatLevel(String(cell.v))
       return formatLevel(String(cell.v).trim())
     }
+
     const lvl5 = getRawLevel(12)
     const lvl4 = getRawLevel(13)
     const lvl3 = getRawLevel(14)
@@ -114,6 +157,7 @@ export function parseKpiWorkbook(workbook: XLSX.WorkBook): ConvertResult {
         position: empPositions[col] ?? '',
         measureCode,
         kpiName,
+        section: sectionName,
         weight: w,
         unit,
         perspective,
@@ -130,7 +174,6 @@ export function parseKpiWorkbook(workbook: XLSX.WorkBook): ConvertResult {
     if (addedAny) kpiNames.add(kpiName)
   }
 
-  // Sort by empCode then preserve original KPI order
   rows.sort((a, b) => a.empCode.localeCompare(b.empCode))
 
   const empSet = new Set(rows.map((r) => r.empCode))
@@ -142,3 +185,4 @@ export function parseKpiWorkbook(workbook: XLSX.WorkBook): ConvertResult {
     rowCount: rows.length,
   }
 }
+
