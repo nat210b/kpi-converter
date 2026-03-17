@@ -1,7 +1,9 @@
-type Page = 'kpi' | 'qr'
+import type { Page } from '../App'
 
 function navHref(page: Page): string {
-  return page === 'qr' ? '#/qr' : '#/kpi'
+  if (page === 'qr') return '#/qr'
+  if (page === 'checkpoint') return '#/checkpoint'
+  return '#/kpi'
 }
 
 export default function TopNav({ page }: { page: Page }) {
@@ -14,10 +16,10 @@ export default function TopNav({ page }: { page: Page }) {
         </a>
 
         <nav className="nav-menu" aria-label="Primary">
-          <a
-            className={`nav-link ${page === 'qr' ? 'is-active' : ''}`}
-            href={navHref('qr')}
-          >
+          <a className={`nav-link ${page === 'checkpoint' ? 'is-active' : ''}`} href={navHref('checkpoint')}>
+            หยอดผลงาน
+          </a>
+          <a className={`nav-link ${page === 'qr' ? 'is-active' : ''}`} href={navHref('qr')}>
             Make QR Code
           </a>
         </nav>
@@ -25,4 +27,3 @@ export default function TopNav({ page }: { page: Page }) {
     </header>
   )
 }
-
